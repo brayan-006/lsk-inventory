@@ -342,6 +342,7 @@ Everything described in this README was executed and checked on my machine.
 **Brayan**, backend developer focused on integrations and ERP-adjacent systems.
 
 - GitHub: [@brayan-006](https://github.com/brayan-006)
+- LinkedIn: [Brayan Latosinski](https://www.linkedin.com/in/brayanlatosinski)
 - Company site: [LSK Technologies](https://brayan-006.github.io/lsk-technologies/)
 
 ## Disclaimer
