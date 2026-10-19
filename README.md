@@ -12,7 +12,7 @@
   <img alt="PostgreSQL 16" src="https://img.shields.io/badge/PostgreSQL-16-336791">
   <img alt="RabbitMQ 3.13" src="https://img.shields.io/badge/RabbitMQ-3.13-FF6600">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-ready-2496ED">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-25%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-26%20passing-brightgreen">
 </p>
 
 ---
@@ -283,7 +283,7 @@ after restarting the mock without the flag, the retry job moves them to `ENVIADO
 ## Tests
 
 ```bash
-mvn test        # 25 integration tests on a real PostgreSQL via Testcontainers (requires Docker)
+mvn test        # 26 integration tests on a real PostgreSQL via Testcontainers (requires Docker)
 ```
 
 | Test class | Covers |
