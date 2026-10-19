@@ -1,4 +1,4 @@
-<h1 align="center">LSK Estoque</h1>
+<h1 align="center">LSK Inventory</h1>
 
 <p align="center">
   Inventory management backend with FEFO picking, ABC analysis, minimum-stock alerts<br>
@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img alt="CI" src="https://github.com/brayan-006/lsk-estoque/actions/workflows/ci.yml/badge.svg">
+  <img alt="CI" src="https://github.com/brayan-006/lsk-inventory/actions/workflows/ci.yml/badge.svg">
   <img alt="Java 17" src="https://img.shields.io/badge/Java-17-orange">
   <img alt="Spring Boot 3.5" src="https://img.shields.io/badge/Spring%20Boot-3.5-6DB33F">
   <img alt="PostgreSQL 16" src="https://img.shields.io/badge/PostgreSQL-16-336791">
@@ -43,7 +43,7 @@ Inventory systems look simple until you meet the real constraints: perishable go
 sales events arrive from a broker and may be delivered more than once, the ERP can be down for hours, and two
 orders can compete for the last unit at the same time.
 
-LSK Estoque is my attempt at solving those problems properly, in a stack that mirrors what an SAP-centric company
+LSK Inventory is my attempt at solving those problems properly, in a stack that mirrors what an SAP-centric company
 uses: a service that owns the physical stock, receives sales as messages, and keeps SAP Business One in sync
 **without ever blocking or rolling back a stock movement because the ERP is unavailable**.
 
@@ -63,14 +63,14 @@ uses: a service that owns the physical stock, receives sales as messages, and ke
 
 ```mermaid
 flowchart LR
-    S[Sales system] -- venda.confirmada --> MQ[(RabbitMQ<br/>lsk.estoque)]
+    S[Sales system] -- sale.confirmed --> MQ[(RabbitMQ<br/>lsk.inventory)]
     MQ --> L[Listener]
     MQ -. business error .-> DLQ[(Dead-letter queue)]
-    L --> P[ProcessarVendaService]
-    P -- idempotency + FEFO<br/>one transaction --> DB[(PostgreSQL<br/>pr_dar_baixa_fefo)]
+    L --> P[ProcessSaleService]
+    P -- idempotency + FEFO<br/>one transaction --> DB[(PostgreSQL<br/>fn_deduct_stock_fefo)]
     UI[React dashboard] -- REST --> API[REST API<br/>sales, NF-e, products, ABC]
     API --> DB
-    DB -- outbox: movimentacoes.sap_status --> SY[SAP sync<br/>after commit + retry job]
+    DB -- outbox: movements.sap_status --> SY[SAP sync<br/>after commit + retry job]
     SY --> SAP[SAP B1<br/>Service Layer]
     JOBS[Scheduled jobs<br/>ABC, minimum stock, expiry] --> DB
 ```
@@ -101,10 +101,16 @@ docker compose ps                        # wait until the application is "health
 curl http://localhost:8080/actuator/health
 ```
 
-Load the sample data (`TONER-HP-85A` with two batches, `CABO-UTP-CAT6`):
+Load the sample data (`TONER-HP-85A` with two batches, `CABLE-UTP-CAT6`):
 
 ```bash
-docker compose exec -T postgres psql -U lsk -d lsk_estoque < src/main/resources/db/dev/dev-seed.sql
+docker compose exec -T postgres psql -U lsk -d lsk_inventory < src/main/resources/db/dev/dev-seed.sql
+```
+
+For a richer demo (10 products, batches with different expiry dates, sales, ABC classes and alerts), run the demo script. It goes through the public API, so the data is created by the real flows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File docs/demo-data.ps1
 ```
 
 | Service | URL |
@@ -113,7 +119,7 @@ docker compose exec -T postgres psql -U lsk -d lsk_estoque < src/main/resources/
 | API | http://localhost:8080 |
 | Swagger UI | http://localhost:8080/swagger-ui.html |
 | RabbitMQ management | http://localhost:15672 (guest / guest) |
-| PostgreSQL | localhost:5432 (lsk / lsk, database `lsk_estoque`) |
+| PostgreSQL | localhost:5432 (lsk / lsk, database `lsk_inventory`) |
 
 Reset everything with `docker compose down -v`.
 
@@ -151,40 +157,40 @@ and it refreshes itself every 10 to 15 seconds.
 
 ```bash
 # Real-time position: balance and batches in the order they will be picked
-curl http://localhost:8080/api/v1/estoque/TONER-HP-85A
+curl http://localhost:8080/api/v1/stock/TONER-HP-85A
 
 # Goods receipt from NF-e (idempotent by access key; resubmission returns 409)
-curl -X POST http://localhost:8080/api/v1/estoque/entradas/nfe -H 'Content-Type: application/json' -d '{
-  "chaveAcesso": "35260112345678000190550010000012341000012345",
-  "numero": "1234",
-  "itens": [{ "sku": "TONER-HP-85A", "codigoLote": "L-2026-C", "quantidade": 20,
-              "custoUnitario": 119.50, "dataFabricacao": "2026-09-01", "dataValidade": "2027-09-01" }]
+curl -X POST http://localhost:8080/api/v1/stock/receipts/nfe -H 'Content-Type: application/json' -d '{
+  "accessKey": "35260112345678000190550010000012341000012345",
+  "number": "1234",
+  "items": [{ "sku": "TONER-HP-85A", "batchCode": "L-2026-C", "quantity": 20,
+              "unitCost": 119.50, "manufacturingDate": "2026-09-01", "expiryDate": "2027-09-01" }]
 }'
 
 # Products by ABC class
-curl 'http://localhost:8080/api/v1/produtos?classe=A'
+curl 'http://localhost:8080/api/v1/abc-analysis/products?abcClass=A'
 
 # Recalculate the ABC analysis on demand (a nightly job also does it)
-curl -X POST http://localhost:8080/api/v1/estoque/curva-abc/recalcular
+curl -X POST http://localhost:8080/api/v1/stock/abc-analysis/recalculate
 ```
 
-Example response of the stock query. Note `ordemDeSaida`: the batch with the earliest expiry leaves first.
+Example response of the stock query. Note `pickingOrder`: the batch with the earliest expiry leaves first.
 
 ```json
 {
   "sku": "TONER-HP-85A",
-  "classeAbc": "A",
-  "saldoDisponivel": 24.000,
-  "estoqueMinimo": 5.000,
-  "abaixoDoMinimo": false,
-  "lotesEmOrdemDeSaida": [
-    { "codigoLote": "L-2026-C", "dataValidade": "2027-09-01", "quantidade": 4.000,  "criterio": "FEFO", "ordemDeSaida": 1 },
-    { "codigoLote": "L-2026-D", "dataValidade": "2027-09-01", "quantidade": 20.000, "criterio": "FEFO", "ordemDeSaida": 2 }
+  "abcClass": "A",
+  "availableBalance": 24.000,
+  "minimumStock": 5.000,
+  "belowMinimum": false,
+  "batchesInPickingOrder": [
+    { "batchCode": "L-2026-C", "expiryDate": "2027-09-01", "quantity": 4.000,  "criterion": "FEFO", "pickingOrder": 1 },
+    { "batchCode": "L-2026-D", "expiryDate": "2027-09-01", "quantity": 20.000, "criterion": "FEFO", "pickingOrder": 2 }
   ]
 }
 ```
 
-A ready-to-import Postman/Insomnia collection is in [`docs/LSK-Estoque.postman_collection.json`](docs/LSK-Estoque.postman_collection.json).
+A ready-to-import Postman/Insomnia collection is in [`docs/LSK-Inventory.postman_collection.json`](docs/LSK-Inventory.postman_collection.json).
 
 ### Endpoints used by the dashboard
 
@@ -203,29 +209,29 @@ A ready-to-import Postman/Insomnia collection is in [`docs/LSK-Estoque.postman_c
 
 ## Sales flow (event-driven)
 
-Sales arrive through RabbitMQ: exchange `lsk.estoque`, routing key `venda.confirmada`, `content_type = application/json`.
+Sales arrive through RabbitMQ: exchange `lsk.inventory`, routing key `sale.confirmed`, `content_type = application/json`.
 
 ```json
 {
   "eventId": "7b0c7a62-5d6a-4b0e-9a55-2f1d1d3f6a10",
-  "pedido": "PED-1001",
-  "ocorridoEm": "2026-10-08T14:30:00Z",
-  "itens": [{ "sku": "TONER-HP-85A", "quantidade": 7, "precoUnitario": 189.90 }]
+  "order": "PED-1001",
+  "occurredAt": "2026-10-08T14:30:00Z",
+  "items": [{ "sku": "TONER-HP-85A", "quantity": 7, "unitPrice": 189.90 }]
 }
 ```
 
-You can publish it from the RabbitMQ management UI (Exchanges, `lsk.estoque`, Publish message).
+You can publish it from the RabbitMQ management UI (Exchanges, `lsk.inventory`, Publish message).
 
-What happens next, in a single database transaction: the `eventId` is registered in `eventos_processados`
+What happens next, in a single database transaction: the `eventId` is registered in `processed_events`
 (a duplicate stops here), each SKU is deducted by the FEFO function, movements are recorded in the outbox and minimum-stock
 rules are evaluated. Only after the commit does the SAP synchronization start.
 
 - Publishing the same `eventId` twice deducts the stock **once**.
-- Unknown SKU or insufficient stock: the message goes to `lsk.estoque.vendas.dlq` and the balance does not change.
+- Unknown SKU or insufficient stock: the message goes to `lsk.inventory.sales.dlq` and the balance does not change.
 
 ## SAP Business One integration
 
-Disabled by default (`lsk.sap.enabled=false`); movements simply wait as `PENDENTE` in the outbox. To enable it against a Service Layer:
+Disabled by default (`lsk.sap.enabled=false`); movements simply wait as `PENDING` in the outbox. To enable it against a Service Layer:
 
 ```bash
 SAP_ENABLED=true SAP_URL=https://server:50000 SAP_COMPANY_DB=SBO_LSK SAP_USER=... SAP_PASSWORD=... \
@@ -234,8 +240,8 @@ SAP_WAREHOUSE=01 mvn spring-boot:run
 
 - Goods issue is posted to `InventoryGenExits` and goods receipt to `InventoryGenEntries`.
 - Batches are sent in `BatchNumbers` (`lsk.sap.send-batches=false` for items without batch management).
-- `ItemCode` comes from `produtos.sap_item_code`, falling back to the SKU.
-- SAP-side idempotency: each document carries `Reference2 = VENDA-<eventId>` / `NFE-<accessKey>`, and the service checks for it before creating.
+- `ItemCode` comes from `products.sap_item_code`, falling back to the SKU.
+- SAP-side idempotency: each document carries `Reference2 = SALE-<eventId>` / `NFE-<accessKey>`, and the service checks for it before creating.
 - Self-signed certificates in DEV: `SAP_INSECURE_SSL=true` (or import the certificate into the JVM truststore).
 
 ### Developing without an SAP system
@@ -260,23 +266,23 @@ $env:APP_SAP_ENABLED="true"; docker compose up -d
 Inspect the outbox:
 
 ```bash
-docker compose exec -T postgres psql -U lsk -d lsk_estoque -c \
-  "select tipo, referencia, sap_status, sap_tentativas, sap_doc_entry, sap_erro from movimentacoes order by id"
+docker compose exec -T postgres psql -U lsk -d lsk_inventory -c \
+  "select type, reference, sap_status, sap_attempts, sap_doc_entry, sap_error from movements order by id"
 ```
 
-**Failure and recovery scenario I validated:** with `MOCK_FAIL=1` the rows become `ERRO` and `sap_tentativas` grows every minute;
-after restarting the mock without the flag, the retry job moves them to `ENVIADO` with the document number filled in.
+**Failure and recovery scenario I validated:** with `MOCK_FAIL=1` the rows become `ERROR` and `sap_attempts` grows every minute;
+after restarting the mock without the flag, the retry job moves them to `SENT` with the document number filled in.
 
 ## Design decisions
 
 | Topic | Decision and reasoning |
 |---|---|
-| FEFO | The rule lives in one place, the PL/pgSQL function `pr_dar_baixa_fefo`, which locks product and batches, deducts and records movements atomically. Order: batches with expiry (earliest first, ties by receipt date), then batches without expiry (FIFO). It is a *function*, not a *procedure*, because the application needs the picked batches back as a result set. |
-| Idempotency | `INSERT ... ON CONFLICT DO NOTHING` into `eventos_processados` inside the **same transaction** as the deduction, so a crash can never leave "processed but not deducted" (or the reverse). |
-| SAP outbox | The movement and its `sap_status` are written together; delivery happens after commit and a job retries `PENDENTE`/`ERRO` rows. The ERP being down never undoes a physical stock movement. |
+| FEFO | The rule lives in one place, the PL/pgSQL function `fn_deduct_stock_fefo`, which locks product and batches, deducts and records movements atomically. Order: batches with expiry (earliest first, ties by receipt date), then batches without expiry (FIFO). It is a *function*, not a *procedure*, because the application needs the picked batches back as a result set. |
+| Idempotency | `INSERT ... ON CONFLICT DO NOTHING` into `processed_events` inside the **same transaction** as the deduction, so a crash can never leave "processed but not deducted" (or the reverse). |
+| SAP outbox | The movement and its `sap_status` are written together; delivery happens after commit and a job retries `PENDING`/`ERROR` rows. The ERP being down never undoes a physical stock movement. |
 | Concurrency | `FOR UPDATE` on product and batches; SKUs of an order are processed in alphabetical order to avoid deadlocks between concurrent orders. |
-| ABC analysis | Revenue (price times quantity of `VENDA` outbound movements) over 90 days, turnover as tiebreaker. A product is class A while the cumulative share *before* it is under 80 %. Items without sales drop to C. |
-| Minimum stock | Evaluated on every receipt and deduction and by a sweep every 15 minutes. One open alert per product, resolved automatically on recovery; also published to `lsk.estoque.alertas.q`. |
+| ABC analysis | Revenue (price times quantity of `SALE` outbound movements) over 90 days, turnover as tiebreaker. A product is class A while the cumulative share *before* it is under 80 %. Items without sales drop to C. |
+| Minimum stock | Evaluated on every receipt and deduction and by a sweep every 15 minutes. One open alert per product, resolved automatically on recovery; also published to `lsk.inventory.alerts.q`. |
 | Schema | Owned by Flyway; Hibernate runs with `ddl-auto=validate`, so any drift between entities and schema fails at startup instead of in production. |
 | SAP documents | Goods issue and receipt map to `InventoryGenExits` and `InventoryGenEntries` in the Service Layer. |
 
@@ -288,10 +294,10 @@ mvn test        # 26 integration tests on a real PostgreSQL via Testcontainers (
 
 | Test class | Covers |
 |---|---|
-| `BaixaFefoIntegrationTest` | FEFO order, FIFO fallback, expired and blocked batches, insufficient stock |
-| `EntradaNfeIntegrationTest` | Batch creation, idempotency by access key, weighted average cost, validations |
-| `VendaIntegrationTest` | Event idempotency, business errors, minimum-stock alert lifecycle |
-| `CurvaAbcIntegrationTest` | A/B/C classification and downgrade of items without sales |
+| `FefoDeductionIntegrationTest` | FEFO order, FIFO fallback, expired and blocked batches, insufficient stock |
+| `NfeReceiptIntegrationTest` | Batch creation, idempotency by access key, weighted average cost, validations |
+| `SaleIntegrationTest` | Event idempotency, business errors, minimum-stock alert lifecycle |
+| `AbcAnalysisIntegrationTest` | A/B/C classification and downgrade of items without sales |
 | `OperationsIntegrationTest` | Product creation, duplicated SKU, alert re-evaluation on minimum change, soft delete and reactivation |
 
 The tests run against a real database on purpose: the picking rule is SQL, so mocking the repository would test nothing.
@@ -323,18 +329,18 @@ docker-compose.yml   application + dashboard + PostgreSQL + RabbitMQ with health
 ## Roadmap
 
 - [x] Web dashboard (React): stock by batch, alerts, ABC chart, operations and SAP sync status
-- [ ] Translate remaining Portuguese identifiers, comments and messages to English
+- [x] Code, database schema and API fully in English
 - [ ] Authentication (OAuth2/JWT) and role-based access
 - [x] CI pipeline (build and tests on every push)
 - [ ] Metrics and tracing (Micrometer, OpenTelemetry)
 
 ## How this was built
 
-I built this project with an AI assistant (Claude) as a pair-programming partner. It helped me draft code, reason about
-PostgreSQL locking and the PL/pgSQL function, and debug environment problems. I treated its output as a starting point:
-I set up the environment (Docker, WSL2, Maven), ran every scenario myself, hit and fixed real issues
-(a `char(1)` versus `varchar` mapping bug, Docker DNS problems during the image build, a transaction left in an aborted
-state inside a test), and decided the behaviors listed in [Design decisions](#design-decisions).
+I used an AI assistant (Claude) as a support tool during development: for code suggestions, for reviewing the database
+design and the PL/pgSQL function, and for troubleshooting my environment. The design decisions are mine
+(see [Design decisions](#design-decisions)), and so is the validation: I set up the environment (Docker, WSL2, Maven),
+ran every scenario myself, and found and fixed real issues along the way (a `char(1)` versus `varchar` mapping bug,
+Docker DNS problems during the image build, a transaction left in an aborted state inside a test).
 Everything described in this README was executed and checked on my machine.
 
 ## Author
