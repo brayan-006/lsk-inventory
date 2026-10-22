@@ -142,6 +142,8 @@ mvn spring-boot:run
 A React dashboard (Vite + Recharts) sits on top of the API. It is not a mock: every screen reads and writes real data,
 and it refreshes itself every 10 to 15 seconds.
 
+**Demo video:** [watch the walkthrough on LinkedIn](https://www.linkedin.com/feed/update/urn:li:activity:7518974668372856834/)
+
 | | |
 |---|---|
 | ![Overview](docs/screenshots/overview.png) | ![Products](docs/screenshots/products.png) |
